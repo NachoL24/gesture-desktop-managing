@@ -25,14 +25,21 @@ class GestureController:
         self.last_click_time = 0
         self.click_cooldown = 0.3
         
-        # Suavizado de movimiento
-        self.smooth_factor = 0.7
+        # Suavizado de movimiento mejorado
+        self.smooth_factor = 0.85  # Mayor suavizado
         self.prev_mouse_x, self.prev_mouse_y = pyautogui.position()
         self.last_mouse_x, self.last_mouse_y = 0, 0
         
+        # Filtro de movimiento mínimo
+        self.min_movement = 3  # Píxeles mínimos para mover
+        
+        # Buffer de posiciones para mayor estabilidad
+        self.position_buffer = []
+        self.position_buffer_size = 5
+        
         # Estabilización de gestos
         self.gesture_buffer = []
-        self.buffer_size = 3
+        self.buffer_size = 5  # Buffer más grande
         
         # Configurar pyautogui
         pyautogui.FAILSAFE = False
@@ -44,13 +51,40 @@ class GestureController:
     def is_finger_up(self, landmarks, finger_tip, finger_pip):
         return landmarks[finger_tip].y < landmarks[finger_pip].y - 0.02
 
-    def is_pointing_gesture(self, landmarks):
-        # Solo índice arriba
+    def is_thumb_up(self, landmarks):
+        # Detectar si el pulgar está extendido
+        thumb_tip = landmarks[4]
+        thumb_ip = landmarks[3]
+        thumb_mcp = landmarks[2]
+        
+        # El pulgar está extendido si la punta está más lejos del centro de la mano
+        # que las articulaciones anteriores
+        wrist = landmarks[0]
+        
+        # Distancia de la punta del pulgar a la muñeca
+        tip_distance = self.get_distance(thumb_tip, wrist)
+        # Distancia de la articulación del pulgar a la muñeca
+        joint_distance = self.get_distance(thumb_ip, wrist)
+        
+        return tip_distance > joint_distance + 0.02
+    
+    def is_L_gesture(self, landmarks):
+        # Gesto L: índice y pulgar extendidos, otros dedos cerrados
         index_up = self.is_finger_up(landmarks, 8, 6)
+        thumb_up = self.is_thumb_up(landmarks)
         middle_down = not self.is_finger_up(landmarks, 12, 10)
         ring_down = not self.is_finger_up(landmarks, 16, 14)
         pinky_down = not self.is_finger_up(landmarks, 20, 18)
-        return index_up and middle_down and ring_down and pinky_down
+        return index_up and thumb_up and middle_down and ring_down and pinky_down
+    
+    def is_pointing_gesture(self, landmarks):
+        # Solo índice arriba, pulgar cerrado
+        index_up = self.is_finger_up(landmarks, 8, 6)
+        thumb_down = not self.is_thumb_up(landmarks)
+        middle_down = not self.is_finger_up(landmarks, 12, 10)
+        ring_down = not self.is_finger_up(landmarks, 16, 14)
+        pinky_down = not self.is_finger_up(landmarks, 20, 18)
+        return index_up and thumb_down and middle_down and ring_down and pinky_down
 
     def is_two_fingers_gesture(self, landmarks):
         # Índice y medio arriba
@@ -60,15 +94,32 @@ class GestureController:
         pinky_down = not self.is_finger_up(landmarks, 20, 18)
         return index_up and middle_up and ring_down and pinky_down
 
-    def is_pinch_gesture(self, landmarks):
-        thumb_tip = landmarks[4]
-        index_tip = landmarks[8]
-        distance = self.get_distance(thumb_tip, index_tip)
-        return distance < 0.035
+
 
     def smooth_coordinates(self, new_x, new_y):
-        smooth_x = int(self.prev_mouse_x * self.smooth_factor + new_x * (1 - self.smooth_factor))
-        smooth_y = int(self.prev_mouse_y * self.smooth_factor + new_y * (1 - self.smooth_factor))
+        # Agregar al buffer de posiciones
+        self.position_buffer.append((new_x, new_y))
+        if len(self.position_buffer) > self.position_buffer_size:
+            self.position_buffer.pop(0)
+        
+        # Promedio de posiciones en el buffer
+        if len(self.position_buffer) >= 3:
+            avg_x = sum(pos[0] for pos in self.position_buffer) / len(self.position_buffer)
+            avg_y = sum(pos[1] for pos in self.position_buffer) / len(self.position_buffer)
+        else:
+            avg_x, avg_y = new_x, new_y
+        
+        # Suavizado exponencial
+        smooth_x = int(self.prev_mouse_x * self.smooth_factor + avg_x * (1 - self.smooth_factor))
+        smooth_y = int(self.prev_mouse_y * self.smooth_factor + avg_y * (1 - self.smooth_factor))
+        
+        # Filtro de movimiento mínimo
+        dx = abs(smooth_x - self.prev_mouse_x)
+        dy = abs(smooth_y - self.prev_mouse_y)
+        
+        if dx < self.min_movement and dy < self.min_movement:
+            return int(self.prev_mouse_x), int(self.prev_mouse_y)
+        
         self.prev_mouse_x, self.prev_mouse_y = smooth_x, smooth_y
         return smooth_x, smooth_y
     
@@ -97,29 +148,39 @@ class GestureController:
                     self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                 
                 landmarks = hand_landmarks.landmark
-                index_tip = landmarks[8]
+                index_tip = landmarks[8]  # Punta del dedo índice
                 h, w, _ = frame.shape
                 x = int(index_tip.x * w)
                 y = int(index_tip.y * h)
                 
-                # Mapear coordenadas a pantalla
+                # Mapear coordenadas a pantalla usando área reducida de cámara
                 screen_w, screen_h = pyautogui.size()
-                screen_x = int((1 - index_tip.x) * screen_w)
-                screen_y = int(index_tip.y * screen_h)
+                
+                # Usar solo el 60% central de la cámara para mapear a toda la pantalla
+                margin = 0.2  # 20% de margen en cada lado
+                normalized_x = (index_tip.x - margin) / (1 - 2 * margin)
+                normalized_y = (index_tip.y - margin) / (1 - 2 * margin)
+                
+                # Limitar valores entre 0 y 1
+                normalized_x = max(0, min(1, normalized_x))
+                normalized_y = max(0, min(1, normalized_y))
+                
+                screen_x = int((1 - normalized_x) * screen_w)
+                screen_y = int(normalized_y * screen_h)
                 
                 # Detectar gestos
+                is_L = self.is_L_gesture(landmarks)
                 is_pointing = self.is_pointing_gesture(landmarks)
                 is_two_fingers = self.is_two_fingers_gesture(landmarks)
-                is_pinch = self.is_pinch_gesture(landmarks)
                 
                 # Determinar gesto actual
                 current_gesture = None
-                if is_pinch:
-                    current_gesture = 'pinch'
+                if is_L:
+                    current_gesture = 'move'
+                elif is_pointing:
+                    current_gesture = 'click'
                 elif is_two_fingers:
                     current_gesture = 'scroll'
-                elif is_pointing:
-                    current_gesture = 'move'
                 else:
                     current_gesture = 'none'
                 
@@ -137,7 +198,7 @@ class GestureController:
                         cv2.circle(frame, (x, y), 8, (0, 255, 0), 2)
                         cv2.putText(frame, "MOVE", (x-25, y-15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 
-                elif stable_gesture == 'pinch':
+                elif stable_gesture == 'click':
                     # Click manteniendo posición del mouse
                     current_time = time.time()
                     if current_time - self.last_click_time > self.click_cooldown:
@@ -195,9 +256,9 @@ class GestureController:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         
         print("Detector de gestos iniciado...")
-        print("Dedo índice: Mover mouse")
+        print("Gesto L (índice+pulgar): Mover mouse")
+        print("Solo índice (pulgar cerrado): Click")
         print("Dos dedos (índice+medio): Scroll vertical")
-        print("Pinch (pulgar+índice): Click")
         if self.show_camera:
             print("Presiona 'q' para salir")
         else:
