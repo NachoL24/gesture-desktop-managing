@@ -19,11 +19,10 @@ class GestureController:
         self.show_camera = show_camera
         
         # Variables para control de gestos
-        self.prev_x, self.prev_y = 0, 0
-        self.click_threshold = 30
-        self.scroll_sensitivity = 3
+        self.prev_y = 0
+        self.scroll_sensitivity = 15
         self.last_click_time = 0
-        self.click_cooldown = 0.3
+        self.click_cooldown = 0.5
         
         # Configurar pyautogui
         pyautogui.FAILSAFE = False
@@ -32,12 +31,30 @@ class GestureController:
     def get_distance(self, p1, p2):
         return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
 
+    def is_finger_up(self, landmarks, finger_tip, finger_pip):
+        return landmarks[finger_tip].y < landmarks[finger_pip].y
+
+    def is_pointing_gesture(self, landmarks):
+        # Solo índice arriba
+        index_up = self.is_finger_up(landmarks, 8, 6)
+        middle_down = not self.is_finger_up(landmarks, 12, 10)
+        ring_down = not self.is_finger_up(landmarks, 16, 14)
+        pinky_down = not self.is_finger_up(landmarks, 20, 18)
+        return index_up and middle_down and ring_down and pinky_down
+
+    def is_two_fingers_gesture(self, landmarks):
+        # Índice y medio arriba
+        index_up = self.is_finger_up(landmarks, 8, 6)
+        middle_up = self.is_finger_up(landmarks, 12, 10)
+        ring_down = not self.is_finger_up(landmarks, 16, 14)
+        pinky_down = not self.is_finger_up(landmarks, 20, 18)
+        return index_up and middle_up and ring_down and pinky_down
+
     def is_pinch_gesture(self, landmarks):
-        # Distancia entre pulgar e índice
         thumb_tip = landmarks[4]
         index_tip = landmarks[8]
         distance = self.get_distance(thumb_tip, index_tip)
-        return distance < 0.05
+        return distance < 0.04
 
     def process_frame(self, frame):
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -49,44 +66,57 @@ class GestureController:
                     self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                 
                 landmarks = hand_landmarks.landmark
+                index_tip = landmarks[8]
+                h, w, _ = frame.shape
+                x = int(index_tip.x * w)
+                y = int(index_tip.y * h)
                 
-                if self.is_pinch_gesture(landmarks):
-                    # Obtener posición del índice para control del cursor
-                    index_tip = landmarks[8]
-                    h, w, _ = frame.shape
-                    x = int(index_tip.x * w)
-                    y = int(index_tip.y * h)
-                    
-                    # Mapear coordenadas de la cámara a la pantalla
-                    screen_w, screen_h = pyautogui.size()
-                    screen_x = int((1 - index_tip.x) * screen_w)  # Invertir X para efecto espejo
-                    screen_y = int(index_tip.y * screen_h)
-                    
+                # Mapear coordenadas a pantalla
+                screen_w, screen_h = pyautogui.size()
+                screen_x = int((1 - index_tip.x) * screen_w)
+                screen_y = int(index_tip.y * screen_h)
+                
+                is_pointing = self.is_pointing_gesture(landmarks)
+                is_two_fingers = self.is_two_fingers_gesture(landmarks)
+                is_pinch = self.is_pinch_gesture(landmarks)
+                
+                if is_pinch:
+                    # Click con pinch
                     current_time = time.time()
-                    
-                    if self.prev_x == 0 and self.prev_y == 0:
-                        # Primera detección de pinch - hacer click
-                        if current_time - self.last_click_time > self.click_cooldown:
-                            pyautogui.click(screen_x, screen_y)
-                            self.last_click_time = current_time
-                        self.prev_x, self.prev_y = screen_x, screen_y
-                    else:
-                        # Movimiento con pinch - hacer scroll
-                        dx = screen_x - self.prev_x
-                        dy = screen_y - self.prev_y
-                        
-                        if abs(dy) > 5:  # Threshold mínimo para scroll
-                            scroll_amount = int(dy / self.scroll_sensitivity)
-                            pyautogui.scroll(-scroll_amount)
-                        
-                        self.prev_x, self.prev_y = screen_x, screen_y
+                    if current_time - self.last_click_time > self.click_cooldown:
+                        pyautogui.click()
+                        self.last_click_time = current_time
                     
                     if self.show_camera:
-                        cv2.circle(frame, (x, y), 10, (0, 255, 0), -1)
-                        cv2.putText(frame, "PINCH", (x-30, y-20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        cv2.circle(frame, (x, y), 12, (0, 0, 255), -1)
+                        cv2.putText(frame, "CLICK", (x-30, y-25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                
+                elif is_pointing:
+                    # Mover mouse con dedo índice
+                    pyautogui.moveTo(screen_x, screen_y)
+                    self.prev_y = 0
+                    
+                    if self.show_camera:
+                        cv2.circle(frame, (x, y), 8, (0, 255, 0), 2)
+                        cv2.putText(frame, "MOVE", (x-25, y-15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                elif is_two_fingers:
+                    # Scroll con dos dedos
+                    if self.prev_y != 0:
+                        dy = screen_y - self.prev_y
+                        if abs(dy) > 5:
+                            scroll_amount = int(dy / self.scroll_sensitivity)
+                            pyautogui.scroll(-scroll_amount)
+                    
+                    self.prev_y = screen_y
+                    
+                    if self.show_camera:
+                        cv2.circle(frame, (x, y), 10, (255, 0, 255), 2)
+                        cv2.putText(frame, "SCROLL", (x-35, y-15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+                
                 else:
-                    # Reset cuando no hay pinch
-                    self.prev_x, self.prev_y = 0, 0
+                    # Reset
+                    self.prev_y = 0
         
         return frame
 
@@ -96,8 +126,9 @@ class GestureController:
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         
         print("Detector de gestos iniciado...")
-        print("Haz pinch con pulgar e índice para hacer click")
-        print("Mantén el pinch y mueve la mano para hacer scroll")
+        print("Dedo índice: Mover mouse")
+        print("Dos dedos (índice+medio): Scroll vertical")
+        print("Pinch (pulgar+índice): Click")
         if self.show_camera:
             print("Presiona 'q' para salir")
         else:
@@ -116,7 +147,7 @@ class GestureController:
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
                 else:
-                    cv2.waitKey(1)  # Necesario para el procesamiento
+                    cv2.waitKey(1)
                     
         except KeyboardInterrupt:
             print("\nDeteniendo detector de gestos...")
