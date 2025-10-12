@@ -21,9 +21,11 @@ class GestureController:
         
         # Variables para control de gestos
         self.prev_y = 0
-        self.scroll_sensitivity = 12
+        self.scroll_sensitivity = 5
         self.last_click_time = 0
         self.click_cooldown = 0.3
+        self.last_scroll_time = 0
+        self.scroll_cooldown = 0.15
         
         # Suavizado de movimiento mejorado
         self.smooth_factor = 0.85  # Mayor suavizado
@@ -213,25 +215,17 @@ class GestureController:
                         cv2.putText(frame, "CLICK", (x-30, y-25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 
                 elif stable_gesture == 'scroll':
-                    # Scroll manteniendo posición del mouse
-                    if self.prev_y != 0:
+                    # Scroll más lento con cooldown
+                    current_time = time.time()
+                    if self.prev_y != 0 and current_time - self.last_scroll_time > self.scroll_cooldown:
                         dy = screen_y - self.prev_y
-                        if abs(dy) > 8:
-                            scroll_amount = max(1, int(abs(dy) / self.scroll_sensitivity))
-                            # Hacer scroll en la última posición conocida del mouse
-                            if self.last_mouse_x != 0 and self.last_mouse_y != 0:
-                                current_pos = pyautogui.position()
-                                pyautogui.moveTo(self.last_mouse_x, self.last_mouse_y)
-                                if dy > 0:
-                                    pyautogui.scroll(-scroll_amount)
-                                else:
-                                    pyautogui.scroll(scroll_amount)
-                                pyautogui.moveTo(current_pos)
+                        if abs(dy) > 5:  # Umbral más alto
+                            # Scroll más lento
+                            if dy > 0:
+                                pyautogui.scroll(-1)  # Scroll hacia abajo (más lento)
                             else:
-                                if dy > 0:
-                                    pyautogui.scroll(-scroll_amount)
-                                else:
-                                    pyautogui.scroll(scroll_amount)
+                                pyautogui.scroll(1)   # Scroll hacia arriba (más lento)
+                            self.last_scroll_time = current_time
                     
                     self.prev_y = screen_y
                     
